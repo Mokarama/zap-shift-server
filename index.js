@@ -117,7 +117,7 @@ async function run() {
     // -------------------------------
     // PUT - Update parcel
     // -------------------------------
-    app.put("/parcels/:parcelId", async (req, res) => {
+    app.put("/parcels/:id", async (req, res) => {
       try {
         const id = req.params.id;
         const updatedParcel = req.body;
@@ -133,7 +133,7 @@ async function run() {
     // -------------------------------
     // DELETE - Remove parcel
     // -------------------------------
-    app.delete("/parcels/:parcelId", async (req, res) => {
+    app.delete("/parcels/:id", async (req, res) => {
       try {
         const id = req.params.id;
         const query = { _id: new ObjectId(id) };
@@ -143,6 +143,28 @@ async function run() {
         res.status(500).send({ message: "Failed to delete parcel", error });
       }
     });
+
+    /*****stripe.js */
+app.post('/create-payment-intent', async (req, res) => {
+  try {
+    const paymentIntent = await stripe.paymentIntents.create({
+      amount: 1099,  // amount in cents
+      currency: 'usd',
+      // In the latest version of the API, automatic_payment_methods is enabled by default
+      automatic_payment_methods: {
+        enabled: true,
+      }
+    });
+    
+    res.json({
+      clientSecret: paymentIntent.client_secret
+    });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+
 
     // -------------------------------
     // Default route
