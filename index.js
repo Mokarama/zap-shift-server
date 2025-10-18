@@ -9,6 +9,8 @@ const { MongoClient, ServerApiVersion, ObjectId } = require("mongodb");
 
 dotenv.config();
 
+const stripe = require('stripe')(process.env.PAYMENT_GATEWAY_KEY);
+
 const app = express();
 const port = process.env.PORT || 4000;
 
@@ -150,7 +152,6 @@ app.post('/create-payment-intent', async (req, res) => {
     const paymentIntent = await stripe.paymentIntents.create({
       amount: 1099,  // amount in cents
       currency: 'usd',
-      // In the latest version of the API, automatic_payment_methods is enabled by default
       automatic_payment_methods: {
         enabled: true,
       }
