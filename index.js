@@ -9,7 +9,7 @@ const { MongoClient, ServerApiVersion, ObjectId } = require("mongodb");
 
 dotenv.config();
 
-const stripe = require('stripe')(process.env.PAYMENT_GATEWAY_KEY);
+const stripe = require("stripe")(process.env.PAYMENT_GATEWAY_KEY);
 
 const app = express();
 const port = process.env.PORT || 4000;
@@ -47,20 +47,19 @@ async function run() {
 
     const db = client.db("parcelBD");
     const parcelCollection = db.collection("parcels");
+    const paymentHistoryCollection = db.collection("paymentHistory");
 
     // -------------------------------
     // GET parcels (all or by user email, latest first)
     // -------------------------------
     app.get("/parcels", async (req, res) => {
       try {
-        const { email } = req.query; // get email from query parameter
-
-        // Build filter
+        const { email } = req.query;
         const filter = email ? { user_email: email } : {};
 
         const parcels = await parcelCollection
           .find(filter)
-          .sort({ _id: -1 }) // newest first
+          .sort({ _id: -1 })
           .toArray();
 
         res.send(parcels);
@@ -76,8 +75,7 @@ async function run() {
     app.get("/parcels/:parcelId", async (req, res) => {
       try {
         const id = req.params.parcelId;
-        const query = { _id: new ObjectId(id) };
-        const parcel = await parcelCollection.findOne(query);
+        const parcel = await parcelCollection.findOne({ _id: new ObjectId(id) });
 
         if (!parcel) {
           return res.status(404).send({ message: "Parcel not found" });
@@ -90,25 +88,17 @@ async function run() {
       }
     });
 
-
-    
-
     // -------------------------------
     // POST - Add a new parcel
     // -------------------------------
     app.post("/parcels", async (req, res) => {
       try {
         const newParcel = req.body;
-        console.log("Incoming parcel:", newParcel);
-
         if (!newParcel.sender_name || !newParcel.receiver_name) {
-          return res
-            .status(400)
-            .send({ message: "Sender & Receiver required!" });
+          return res.status(400).send({ message: "Sender & Receiver required!" });
         }
 
         const result = await parcelCollection.insertOne(newParcel);
-        console.log("Inserted:", result.insertedId);
         res.send(result);
       } catch (error) {
         console.error("Error adding parcel:", error);
@@ -123,9 +113,10 @@ async function run() {
       try {
         const id = req.params.id;
         const updatedParcel = req.body;
-        const query = { _id: new ObjectId(id) };
-        const updateDoc = { $set: updatedParcel };
-        const result = await parcelCollection.updateOne(query, updateDoc);
+        const result = await parcelCollection.updateOne(
+          { _id: new ObjectId(id) },
+          { $set: updatedParcel }
+        );
         res.send(result);
       } catch (error) {
         res.status(500).send({ message: "Failed to update parcel", error });
@@ -138,34 +129,117 @@ async function run() {
     app.delete("/parcels/:id", async (req, res) => {
       try {
         const id = req.params.id;
-        const query = { _id: new ObjectId(id) };
-        const result = await parcelCollection.deleteOne(query);
+        const result = await parcelCollection.deleteOne({ _id: new ObjectId(id) });
         res.send(result);
       } catch (error) {
         res.status(500).send({ message: "Failed to delete parcel", error });
       }
     });
 
-    /*****stripe.js */
-app.post('/create-payment-intent', async (req, res) => {
-  try {
-    const paymentIntent = await stripe.paymentIntents.create({
-      amount: 1099,  // amount in cents
-      currency: 'usd',
-      automatic_payment_methods: {
-        enabled: true,
+    // -------------------------------
+    // Stripe - Create Payment Intent
+    // -------------------------------
+    app.post("/create-payment-intent", async (req, res) => {
+      const amountInCents = req.body.amountInCents;
+
+      if (!amountInCents) {
+        return res.status(400).json({ error: "Amount is required" });
+      }
+
+      try {
+        const paymentIntent = await stripe.paymentIntents.create({
+          amount: amountInCents,
+          currency: "usd",
+          automatic_payment_methods: { enabled: true },
+        });
+
+        res.json({ clientSecret: paymentIntent.client_secret });
+      } catch (error) {
+        console.error("Stripe error:", error);
+        res.status(500).json({ error: error.message });
       }
     });
-    
-    res.json({
-      clientSecret: paymentIntent.client_secret
+
+    // -------------------------------
+    // Mark Parcel as Paid
+    // -------------------------------
+    app.post("/parcels/:id/paid", async (req, res) => {
+      try {
+        const parcelId = req.params.id;
+
+        const updateParcel = await parcelCollection.updateOne(
+          { _id: new ObjectId(parcelId) },
+          { $set: { payment_status: "paid", paidAt: new Date() } }
+        );
+
+        if (updateParcel.modifiedCount === 0) {
+          return res.status(404).send({ message: "Parcel not found or already paid" });
+        }
+
+        res.status(200).send({ message: "Parcel marked as paid", updateParcel });
+      } catch (error) {
+        console.error(error);
+        res.status(500).send({ message: "Internal Server Error" });
+      }
     });
-  } catch (error) {
-    res.status(500).json({ error: error.message });
-  }
-});
 
+    // -------------------------------
+    // Save Payment History
+    // -------------------------------
+    app.post("/payments/history", async (req, res) => {
+      try {
+        const { parcelId, userEmail, amount, paymentIntentId } = req.body;
 
+        const paymentHistory = {
+          parcelId,
+          userEmail,
+          amount,
+          paymentIntentId,
+          paymentStatus: "paid",
+          createdAt: new Date(),
+        };
+
+        const result = await paymentHistoryCollection.insertOne(paymentHistory);
+
+        res.status(201).send({ message: "Payment history saved successfully", result });
+      } catch (error) {
+        console.error(error);
+        res.status(500).send({ message: "Internal Server Error" });
+      }
+    });
+
+    // -------------------------------
+    // Get User Payment History
+    // -------------------------------
+    app.get("/payments/user/:email", async (req, res) => {
+      try {
+        const email = req.params.email;
+        const history = await paymentHistoryCollection
+          .find({ userEmail: email })
+          .sort({ createdAt: -1 })
+          .toArray();
+        res.send(history);
+      } catch (error) {
+        console.error(error);
+        res.status(500).send({ message: "Internal Server Error" });
+      }
+    });
+
+    // -------------------------------
+    // Get All Payment History (Admin)
+    // -------------------------------
+    app.get("/payments/all", async (req, res) => {
+      try {
+        const history = await paymentHistoryCollection
+          .find()
+          .sort({ createdAt: -1 })
+          .toArray();
+        res.send(history);
+      } catch (error) {
+        console.error(error);
+        res.status(500).send({ message: "Internal Server Error" });
+      }
+    });
 
     // -------------------------------
     // Default route
@@ -173,10 +247,12 @@ app.post('/create-payment-intent', async (req, res) => {
     app.get("/", (req, res) => {
       res.send("ParcelBD Server is running...");
     });
+
   } catch (error) {
-    console.error(" MongoDB connection failed:", error);
+    console.error("MongoDB connection failed:", error);
   }
 }
+
 run().catch(console.dir);
 
 // -------------------------------
